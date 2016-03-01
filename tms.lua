@@ -8,8 +8,8 @@ minor = 05
 ]]
 
 --tms_blueTasks = 12				-- amount of designed tasks, also useable via doscript
---tms_redTasks = 4
-tms_refresh = 5					-- 0=off, 5,10,15,20,30 default time of repeating taskmessages 
+--tms_redTasks = 7
+tms_refresh = 5					-- 0=off, time of repeating the taskmessage
 tms_answerTime = 10  			-- advised not to be lower than '5'!
 tms_soundSystem = true  		-- if true you will get some cool voiceovers :)
 tms_awacsRespawn = 300
@@ -373,8 +373,8 @@ function tms.makeTaskMsgText(unit, taskNr)
 				end
 			end
 		end
+		text[#text + 1] = 'Your target(s):\n'
 		for ofUnits, amount in pairs(units) do
-			text[#text + 1] = 'Your target(s):\n'
 			text[#text + 1] = amount .. 'x ' .. ofUnits .. '\n'			
 		end
 		text[#text + 1] = '\n'
@@ -566,7 +566,9 @@ function tms.startTask(unit, taskNr)
 	local role = playerDetails[unit].role
 	-- activate all groups by fetched and stored data
 	for i=1, #task[side][role][taskNr].groups do
-		Group.getByName(task[side][role][taskNr].groups[i]):activate()
+		if not string.match(task[side][role][taskNr].groups[i], 'later') then
+			Group.getByName(task[side][role][taskNr].groups[i]):activate()
+		end
 	end
 	tms.debug('STARTTASK ActivateGroups...Target: ' .. task[side][role][taskNr].target .. ' Allied: ' .. task[side][role][taskNr].allied)
 	task[side][role][taskNr].start = timer.getTime()
@@ -579,7 +581,7 @@ function tms.startTask(unit, taskNr)
 	mist.scheduleFunction(tms.loopTaskMessage, {unit, taskNr}, timer.getTime() + 17)
 end
 
---@ this Function will be called via F10 or if the schedule will see that a unit isnt in the combatzone any longer
+--@ this will be called via F10 or if the schedule will see that a unit isnt in the combatzone any longer
 function tms.checkout(unit)
 	local side = playerDetails[unit].side
 	local role = playerDetails[unit].role
@@ -608,18 +610,12 @@ function tms.init(unit)
 		if playerDetails[unit].role == 'cas' or playerDetails[unit].role == 'sead' then
 			playerDetails[unit].menu[10]= missionCommands.addSubMenuForGroup(gid, 'Target Marker', playerDetails[unit].menu[1])
 			playerDetails[unit].menu[11]= missionCommands.addCommandForGroup(gid, 'WP'   , playerDetails[unit].menu[10], tms.markTarget, {unit, 1})
-			if playerDetails[unit].unitType == 'A-10C' or playerDetails[unit].unitType == 'Ka-50' then
-				playerDetails[unit].menu[12]= missionCommands.addCommandForGroup(gid, 'Laser', playerDetails[unit].menu[10], tms.markTarget, {unit, 2})
-				playerDetails[unit].menu[13]= missionCommands.addCommandForGroup(gid, 'IR'   , playerDetails[unit].menu[10], tms.markTarget, {unit, 3})
-			end
+			-- if playerDetails[unit].unitType == 'A-10C' or playerDetails[unit].unitType == 'Ka-50' then
+				-- playerDetails[unit].menu[12]= missionCommands.addCommandForGroup(gid, 'Laser', playerDetails[unit].menu[10], tms.markTarget, {unit, 2})
+				-- playerDetails[unit].menu[13]= missionCommands.addCommandForGroup(gid, 'IR'   , playerDetails[unit].menu[10], tms.markTarget, {unit, 3})
+			-- end
 			playerDetails[unit].menu[14]= missionCommands.addCommandForGroup(gid, 'OFF'  , playerDetails[unit].menu[10], tms.markTarget, {unit, 0})
 		end
-		-- tms.Loop	 = missionCommands.addSubMenuForGroup(gid, 'Refresh rate'	  , tms.Main)
-		-- tms.Loop1	 = missionCommands.addCommandForGroup(gid, '5s'  		  , tms.Loop, tms.messageRefresh, {unit,5})
-		-- tms.Loop2	 = missionCommands.addCommandForGroup(gid, '10s'  		  , tms.Loop, tms.messageRefresh, {unit,10})
-		-- tms.Loop3	 = missionCommands.addCommandForGroup(gid, '15s'  		  , tms.Loop, tms.messageRefresh, {unit,15})
-		-- tms.Loop4	 = missionCommands.addCommandForGroup(gid, '20s'  		  , tms.Loop, tms.messageRefresh, {unit,20})
-		-- tms.Loop5	 = missionCommands.addCommandForGroup(gid, '30s'  		  , tms.Loop, tms.messageRefresh, {unit,30})
 		playerDetails[unit].init = true
 	end
 end
