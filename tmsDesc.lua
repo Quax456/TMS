@@ -1,0 +1,13 @@
+tmsDescr={};tmsDescr['blue']={}
+tmsDescr['blue'][1]='A Hostile armored Platton on the road is attacking an allied Roadblock.'
+tmsDescr['blue'][2]='Artillery is shooting on allied postions.'
+tmsDescr['blue'][3]='Bombing a Bridge which is neccessary for the hostile supplyroutes.'
+tmsDescr['blue'][4]='An allied Outpost is under Mortar attack.'
+tmsDescr['blue'][5]='One of our RECON squads is on the run and beeing hunted by hostile units.'
+tmsDescr['blue'][6]='The enemy is emptying a nearby Warehouse with trucks.'
+tmsDescr['blue'][7]='One of the Georgian patrol squads got ambushed.\nFAC available: POINTER7 VHF 37MHz FM'
+tmsDescr['blue'][8]='Russian Paratroops attacking allied barracks.'
+tmsDescr['blue'][9]='An industrial complex which delivers oil and lubricants to the enemy is the target.'
+tmsDescr['blue'][10]='Russian forces a disembarking a hugh amount of armor and tanks. A flight of older A-10A are on their way.'
+tmsDescr['blue'][11]='Russian Paratroops are dropped near SENAKI Airbase.'
+tmsDescr['blue'][12]='Insurgents are comming down the Mountains with a truck convoy full of explosives. They are going to blow up the Damm.'
