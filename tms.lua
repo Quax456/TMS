@@ -2,20 +2,20 @@
 Credits to: SPEED, Grimes, SNAFU, CiriBob, Stonehouse, Lukrop and AJAX
 they all inspired me to design this script....
 
-tms.version = 0.96 BETA
-major = 10
+tms.version = 0.97 BETA
+major = 11
 minor = 05
 ]]
 
---tms_blueTasks = 12				-- amount of designed tasks, also useable via doscript
---tms_redTasks = 7
+--tms_combined = true
 tms_refresh = 5					-- 0=off, time of repeating the taskmessage
 tms_answerTime = 10  			-- advised not to be lower than '5'!
 tms_soundSystem = true  		-- if true you will get some cool voiceovers :)
+tms_csar = true					-- set true if there should be a soldier on an ejection
 tms_awacsRespawn = 300
 tms_tankerRespawn = 300
-tms_gcicapRespawn = 120
-tms_taskCleanUp = 180
+tms_gcicapRespawn = 30
+tms_taskCleanUp = 600
 tms_sideTbl = {'blue','red'}
 tms_roleTbl = {'cas','cap','sead','cargo'}
 tms_blueHQ = 'Darkstar'
@@ -32,13 +32,40 @@ local tms_debug_ingame = false	-- with this set true you will also get realtime 
 
 task = {}
 tms = {}
-tms = {blue = tms_blueTasks, red = tms_redTasks}
-deadGroup = {}
+
+local function getMaxTaskNr(side)
+  local maxTask = 0
+  for groupName, k in pairs(mist.DBs.groupsByName) do
+    if side == nil then
+      if string.match(groupName, '#') then
+        local actualTask = tonumber(string.sub(groupName, 2,3))
+        if actualTask and actualTask > maxTask then maxTask = actualTask end
+      end
+    else
+      if string.match(groupName, '#') and string.match(groupName,side) then
+        local actualTask = tonumber(string.sub(groupName, 2,3))
+        if actualTask and actualTask > maxTask then maxTask = actualTask end
+      end
+    end
+  end
+  return maxTask
+end
+
+if not tms_combined then
+	tms = {blue = getMaxTaskNr('blue'), red = getMaxTaskNr('blue')}
+else
+	tms = {blue = getMaxTaskNr(), red = getMaxTaskNr()}
+end
+
+local deadGroup = {}
+local smokeGroup = {}
+local landedUnits = {}
 sideTbl = tms_sideTbl
 roleTbl = tms_roleTbl
 playerDetails = {}	-- Table <- all neccessary Data for each initialized unit will be stored there
-unitIsDead = {}
-schedule_updateUnits = nil
+local unitIsDead = {}
+local downedPilot = {}
+local schedule_updateUnits = nil
 
 for a, side in pairs(sideTbl) do
 	task[side] = {}
@@ -114,17 +141,22 @@ function tms.sideToCoa(side)
 	end
 end
 
---@ used to know what kind of role an AC is designed for
-function tms.taskType(groupName)
-	if string.match(groupName, 'CAS') then return 'cas'
-	elseif string.match(groupName, 'CAP') then return 'cap'
-	elseif string.match(groupName, 'SEAD') then return 'sead'
-	elseif string.match(groupName, 'CARGO') then return 'cargo'
-	else
-		env.info('No Role-Type found in group name: ' .. groupName)
-	end
+function tms.invertSide(side)
+	if side == 'blue' then return 'red'
+	elseif side == 'red' then return 'blue' end
 end
 
+function tms.stopGroup(groupName)
+	if groupName == nil or type(groupName) ~= 'string' then return false end
+	trigger.action.groupStopMoving(Group.getByName(groupName))
+end
+
+function tms.startGroup(groupName)
+	if groupName == nil or type(groupName) ~= 'string' then return false end
+	trigger.action.groupContinueMoving(Group.getByName(groupName))
+end
+
+--@ calculating casualties for both, right out of the view of asking Coa
 function tms.casualties(side)
 	local ownGroundUnits=0
 	local ownAirUnits=0
@@ -138,20 +170,22 @@ function tms.casualties(side)
 		hostile = 'blue'	
 	end
 	for unitID, deadUnit in pairs(mist.DBs.deadObjects) do
-	  all = all +1 
-	  if deadUnit.objectData.coalition == side then
-		if deadUnit.objectData.category == 'vehicle' then
-		  ownGroundUnits=ownGroundUnits+1
-		elseif deadUnit.objectData.category == 'plane' or deadUnit.objectData.category == 'helicopter' then
-		  ownAirUnits=ownAirUnits+1
+		if deadUnit.objectType ~= 'building' then
+			all = all +1
+			if deadUnit.objectData.coalition == side then
+				if deadUnit.objectData.category == 'vehicle' then
+				  ownGroundUnits=ownGroundUnits+1
+				elseif deadUnit.objectData.category == 'plane' or deadUnit.objectData.category == 'helicopter' then
+				  ownAirUnits=ownAirUnits+1
+				end
+			elseif deadUnit.objectData.coalition == hostile then
+				if deadUnit.objectData.category == 'vehicle' then
+				  hostileGroundUnits=hostileGroundUnits+1
+				elseif deadUnit.objectData.category == 'plane' or deadUnit.objectData.category == 'helicopter' then
+				  hostileAirUnits=hostileAirUnits+1
+				end
+			end
 		end
-	  elseif deadUnit.objectData.coalition == hostile then
-		if deadUnit.objectData.category == 'vehicle' then
-		  hostileGroundUnits=hostileGroundUnits+1
-		elseif deadUnit.objectData.category == 'plane' or deadUnit.objectData.category == 'helicopter' then
-		  hostileAirUnits=hostileAirUnits+1
-		end
-	  end
 	end
 	casualtiesTbl[#casualtiesTbl+1] = hostileAirUnits
 	casualtiesTbl[#casualtiesTbl+1] = hostileGroundUnits
@@ -179,13 +213,11 @@ function tms.buildPicture(unitName)
 		end
 	end
 	picture[#picture + 1] = 'Allied A/C on station: ' .. buddys .. '\n'
-	picture[#picture + 1] = 'Orders achived:        ' .. taskSuccess .. '\n'
-	picture[#picture + 1] = 'Orders failed:         ' .. taskFail .. '\n\n'
-	--if casualties[1] ~= 0 and casualties[2] ~= 0 and casualties[3] ~= 0 and casualties[4] ~= 0 then
+	picture[#picture + 1] = 'Orders  achived:        ' .. taskSuccess .. '\n'
+	picture[#picture + 1] = 'Orders   failed:         ' .. taskFail .. '\n\n'
 		picture[#picture + 1] = 'CASUALTIES in total: ' .. casualties[5] .. '\n'
 		picture[#picture + 1] = 'HOSTILE Air Units:   ' .. casualties[1] .. ' Ground Units: ' .. casualties[2] .. '\n'
 		picture[#picture + 1] = 'ALLIED   Air Units:   ' .. casualties[3] .. ' Ground Units: ' .. casualties[4] .. '\n'
-	--end
 	return table.concat(picture)
 end
 
@@ -298,8 +330,28 @@ function tms.message(unit, command)
 	end
 end
 
-function tms.smokeMarker(groups)
-	trigger.action.smoke(mist.getAvgPos(mist.makeUnitTable(groups)), trigger.smokeColor.White)
+function tms.smokeGroupOn(group, color, interval)
+	if interval < 100 then return false end
+	local smokePosition = mist.getAvgPos(mist.makeUnitTable(group))
+	if string.upper(color) == 'RED' then smokeColor = trigger.smokeColor.Red
+	elseif string.upper(color) == 'BLUE' then smokeColor = trigger.smokeColor.Blue
+	elseif string.upper(color) == 'WHITE' then smokeColor = trigger.smokeColor.White
+	elseif string.upper(color) == 'GREEN' then smokeColor = trigger.smokeColor.Green
+	elseif string.upper(color) == 'ORANGE' then smokeColor = trigger.smokeColor.Orange end
+	if not smokeGroup[group] then smokeGroup[group]={} end
+	smokeGroup[group] = mist.scheduleFunction(trigger.action.smoke,{smokePosition, smokeColor}, timer.getTimer(), interval)
+end
+
+function tms.smokeGroupOff(group)
+	if not smokeGroup[group] then return false end
+	mist.removeFunction(smokeGroup[group])
+	table.remove(smokeGroup, group)
+end
+
+function tms.smokeMarker(groups, side)
+	if side == 'red' then color = trigger.smokeColor.Blue
+	elseif side == 'blue' then color = trigger.smokeColor.Red end
+	trigger.action.smoke(mist.getAvgPos(mist.makeUnitTable(groups)), color)
 	tms.debug('SMOKEMARKER ON!')
 end
 
@@ -322,7 +374,7 @@ function tms.markTarget(vars)
 			end
 		end
 		tms.message(vars[1], 'smoke_on')
-		task[side][role][taskNr].markerSchedule = mist.scheduleFunction(tms.smokeMarker, {taskGroups}, timer.getTime(), 210)
+		task[side][role][taskNr].markerSchedule = mist.scheduleFunction(tms.smokeMarker, {taskGroups, side}, timer.getTime(), 210)
 		tms.debug('MARKER ON')
 	end
 end
@@ -379,8 +431,11 @@ function tms.makeTaskMsgText(unit, taskNr)
 		end
 		text[#text + 1] = '\n'
 	end
-	if tmsDescr[side] then
+	if not tms_combined and tmsDescr then
 		local temptext = tmsDescr[side][taskNr]
+		output = header .. temptext .. '\n\n' .. table.concat(text)
+	elseif tms_combined and tmsDescr then
+		local temptext = tmsDescr[taskNr]
 		output = header .. temptext .. '\n\n' .. table.concat(text)
 	else
 		output = header .. table.concat(text)
@@ -485,11 +540,8 @@ end
 
 function tms.updatePlayersInZone() 
 	for unit, v in pairs(playerDetails) do
-	--local unit = next(playerDetails)
-	--repeat
 		if playerDetails[unit].active == true then
 			local unitPos = Unit.getByName(unit):getPoint()      
-			--local role = playerDetails[unit].role
 			local side = playerDetails[unit].side
 			local zonePoints = mist.getGroupPoints(task[side].zone)
 			local isUnitInZone = mist.pointInPolygon(unitPos, zonePoints)
@@ -506,8 +558,6 @@ function tms.updatePlayersInZone()
 				return false
 			end
 		end
-		--unit = next(playerDetails, unit)
-	--until unit == nil
 	end
 end
 
@@ -535,8 +585,7 @@ function tms.triggerTask(unit)
 	local role = playerDetails[unit].role
 	if #task[side][role].activeTaskTable < task[side][role].parallelTasksAllowed then
 		tms.debug('TRIGGER Side: '.. string.upper(side) .. ' Role: ' .. string.upper(role) .. ' #TaskTable: ' .. #task[side][role].activeTaskTable .. '. Allowed: ' .. task[side][role].parallelTasksAllowed)
-		if task[side].globalTaskPointer < 1 or 
-		task[side].globalTaskPointer == task[side][role].roleTaskPointer then
+		if task[side].globalTaskPointer < 1 or task[side].globalTaskPointer == task[side][role].roleTaskPointer then
 			tms.debug('TRIGGER Global: ' .. task[side].globalTaskPointer .. ' Local: ' .. task[side][role].roleTaskPointer .. ' start Task')
 			task[side].globalTaskPointer = task[side].globalTaskPointer + 1				-- increse Global Counter
 			task[side][role].roleTaskPointer = 	task[side].globalTaskPointer			-- set local counter to same value
@@ -562,22 +611,44 @@ end
 
 --@ all neccessary data will be collected and stored and used to activat all relevant groups
 function tms.startTask(unit, taskNr)
-	local side = playerDetails[unit].side
-	local role = playerDetails[unit].role
-	-- activate all groups by fetched and stored data
-	for i=1, #task[side][role][taskNr].groups do
-		if not string.match(task[side][role][taskNr].groups[i], 'later') then
-			Group.getByName(task[side][role][taskNr].groups[i]):activate()
+
+	local function setTimeAndTask(side,role,taskNr)
+		task[side][role][taskNr].start = timer.getTime()
+		table.insert(task[side][role].activeTaskTable, taskNr)
+		for player, z in pairs(playerDetails) do
+			if playerDetails[player].role == role and playerDetails[player].side == side and playerDetails[player].active and playerDetails[player].checkedin then
+				local msg = {}
+				msg.msgFor = {units = {player}}
+				msg.displayTime = 5
+				msg.text = player .. ', this is ' .. task[side].hq .. ', new ' .. string.upper(role) .. ' Order available!'
+				mist.scheduleFunction(mist.message.add, {msg}, timer.getTime()+12)
+				tms.debug('STARTTASK ActivateGroups with amount of Targets: ' .. task[side][role][taskNr].target .. ' for PLAYER: ' .. player)
+			end
 		end
 	end
-	tms.debug('STARTTASK ActivateGroups...Target: ' .. task[side][role][taskNr].target .. ' Allied: ' .. task[side][role][taskNr].allied)
-	task[side][role][taskNr].start = timer.getTime()
-	table.insert(task[side][role].activeTaskTable, taskNr)
-	local msg = {}
-	msg.msgFor = {units = {unit}}
-	msg.displayTime = 5
-	msg.text = unit .. ', this is ' .. task[side].hq .. ', new ' .. string.upper(role) .. ' Order available!'
-	mist.scheduleFunction(mist.message.add, {msg}, timer.getTime()+12)
+	
+	local role = playerDetails[unit].role
+	-- activate all groups by fetched and stored data
+	if tms_combined then
+		for k,side in pairs(sideTbl) do
+			for i=1, #task[side][role][taskNr].groups do
+				if not string.match(task[side][role][taskNr].groups[i], 'later') then
+					Group.getByName(task[side][role][taskNr].groups[i]):activate()
+				end
+			end
+			setTimeAndTask(side,role,taskNr)
+			tms.debug('STARTTASK side: ' .. side .. ' Role: ' .. role .. ' TaskNr: ' .. taskNr)
+		end
+	elseif not tms_combined then
+		local side = playerDetails[unit].side
+		for i=1, #task[side][role][taskNr].groups do
+			if not string.match(task[side][role][taskNr].groups[i], 'later') then
+				Group.getByName(task[side][role][taskNr].groups[i]):activate()
+			end
+		end
+		setTimeAndTask(side,role,taskNr)
+		tms.debug('STARTTASK ActivateGroups...Target: ' .. task[side][role][taskNr].target .. ' Allied: ' .. task[side][role][taskNr].allied)
+	end
 	mist.scheduleFunction(tms.loopTaskMessage, {unit, taskNr}, timer.getTime() + 17)
 end
 
@@ -590,6 +661,7 @@ function tms.checkout(unit)
 		playerDetails[unit].checkedin = false
 		task[side][role].checkedInAndInZone = task[side][role].checkedInAndInZone - 1
 		tms.message(unit, 'checkout')
+		tms.messageRefresh({unit, 0})
 	end
 end
 
@@ -599,22 +671,22 @@ function tms.init(unit)
 		local gid = playerDetails[unit].gid
 		-- providing the initial F10 items
 		playerDetails[unit].menu[1] = missionCommands.addSubMenuForGroup(gid, 'Tasking'	  , nil)
-		playerDetails[unit].menu[2] = missionCommands.addCommandForGroup(gid, 'Request Task' , playerDetails[unit].menu[1], tms.checkin,  unit)
-		playerDetails[unit].menu[3] = missionCommands.addCommandForGroup(gid, 'Picture'	     , playerDetails[unit].menu[1], tms.picture,  unit)
-		playerDetails[unit].menu[4] = missionCommands.addCommandForGroup(gid, 'Check Out'    , playerDetails[unit].menu[1], tms.checkout, unit)
-		playerDetails[unit].menu[5] = missionCommands.addCommandForGroup(gid, 'Message Off'  , playerDetails[unit].menu[1], tms.messageRefresh, {unit,0})
-		playerDetails[unit].menu[6] = missionCommands.addSubMenuForGroup(gid, 'Task Details' , playerDetails[unit].menu[1])
-		playerDetails[unit].menu[7] = missionCommands.addCommandForGroup(gid, 'Task#1 info'  , playerDetails[unit].menu[6], tms.showtask, {unit, 1})
-		playerDetails[unit].menu[8] = missionCommands.addCommandForGroup(gid, 'Task#2 info'  , playerDetails[unit].menu[6], tms.showtask, {unit, 2})
-		playerDetails[unit].menu[9] = missionCommands.addCommandForGroup(gid, 'Task#3 info'  , playerDetails[unit].menu[6], tms.showtask, {unit, 3})
+		playerDetails[unit].menu[2] = missionCommands.addCommandForGroup(gid, 'Request Task' 	 , playerDetails[unit].menu[1], tms.checkin,  unit)
+		playerDetails[unit].menu[3] = missionCommands.addCommandForGroup(gid, 'Picture'	     	 , playerDetails[unit].menu[1], tms.picture,  unit)
+		playerDetails[unit].menu[4] = missionCommands.addCommandForGroup(gid, 'Check Out'    	 , playerDetails[unit].menu[1], tms.checkout, unit)
+		playerDetails[unit].menu[5] = missionCommands.addCommandForGroup(gid, 'Message Off'  	 , playerDetails[unit].menu[1], tms.messageRefresh, {unit,0})
+		playerDetails[unit].menu[6] = missionCommands.addSubMenuForGroup(gid, 'Task Details' 	 , playerDetails[unit].menu[1])
+		playerDetails[unit].menu[7] = missionCommands.addCommandForGroup(gid, 'Task#1 info'  	 , playerDetails[unit].menu[6], tms.showtask, {unit, 1})
+		playerDetails[unit].menu[8] = missionCommands.addCommandForGroup(gid, 'Task#2 info'  	 , playerDetails[unit].menu[6], tms.showtask, {unit, 2})
+		playerDetails[unit].menu[9] = missionCommands.addCommandForGroup(gid, 'Task#3 info'  	 , playerDetails[unit].menu[6], tms.showtask, {unit, 3})
 		if playerDetails[unit].role == 'cas' or playerDetails[unit].role == 'sead' then
 			playerDetails[unit].menu[10]= missionCommands.addSubMenuForGroup(gid, 'Target Marker', playerDetails[unit].menu[1])
-			playerDetails[unit].menu[11]= missionCommands.addCommandForGroup(gid, 'WP'   , playerDetails[unit].menu[10], tms.markTarget, {unit, 1})
+			playerDetails[unit].menu[11]= missionCommands.addCommandForGroup(gid, 'Smoke'   	 , playerDetails[unit].menu[10], tms.markTarget, {unit, 1})
 			-- if playerDetails[unit].unitType == 'A-10C' or playerDetails[unit].unitType == 'Ka-50' then
 				-- playerDetails[unit].menu[12]= missionCommands.addCommandForGroup(gid, 'Laser', playerDetails[unit].menu[10], tms.markTarget, {unit, 2})
 				-- playerDetails[unit].menu[13]= missionCommands.addCommandForGroup(gid, 'IR'   , playerDetails[unit].menu[10], tms.markTarget, {unit, 3})
 			-- end
-			playerDetails[unit].menu[14]= missionCommands.addCommandForGroup(gid, 'OFF'  , playerDetails[unit].menu[10], tms.markTarget, {unit, 0})
+			playerDetails[unit].menu[14]= missionCommands.addCommandForGroup(gid, 'OFF'  		 , playerDetails[unit].menu[10], tms.markTarget, {unit, 0})
 		end
 		playerDetails[unit].init = true
 	end
@@ -654,7 +726,7 @@ function tms.taskFinishMessage(side, role, taskNr)
 	mist.message.add(msg)
 end
 
---@ deactive all units no longer be neccessary
+--@ deactive all units which are no longer neccessary
 --@ this is for cleanup purpose
 --@ DCS beginns to struggle if there are too much Ground units
 function tms.deactivateGroups(groupTable)
@@ -667,63 +739,81 @@ end
 
 --@ the event system will call this if a task is over
 function tms.taskOver(side, role, taskNr, success)
-	for index=1, #task[side][role].activeTaskTable do
-		if task[side][role].activeTaskTable[index] == taskNr then
-			table.remove(task[side][role].activeTaskTable, index)
-			tms.debug('TASK-OVER Task#: ' .. taskNr .. ' removed out of Tasktable')
+	task[side][role][taskNr].success = success
+
+	local function cleanUpTask(side, role, taskNr)
+		task[side][role][taskNr].finish = timer.getTime()
+		mist.removeFunction(task[side][role][taskNr].markerSchedule)
+		task[side][role][taskNr].markerSchedule = nil
+		tms.taskFinishMessage(side, role, taskNr)
+		mist.scheduleFunction(tms.deactivateGroups, {task[side][role][taskNr].groups}, timer.getTime() + tms_taskCleanUp)
+		tms.debug('TASKOVER-CLEANUP: ' .. side .. ' ' .. role .. ' ' .. taskNr)
+	end
+	if not tms_combined then
+		for index=1, #task[side][role].activeTaskTable do
+			if task[side][role].activeTaskTable[index] == taskNr then
+				table.remove(task[side][role].activeTaskTable, index)
+				tms.debug('TASK-OVER Task#: ' .. taskNr .. ' removed out of Tasktable')
+			end
+		end
+		cleanUpTask(side,role,taskNr)
+	elseif tms_combined then 
+		task[tms.invertSide(side)][role][taskNr].success = false
+		for k, side in pairs(sideTbl) do
+			for index=1, #task[side][role].activeTaskTable do
+				if task[side][role].activeTaskTable[index] == taskNr then
+					table.remove(task[side][role].activeTaskTable, index)
+					tms.debug('TASK-OVER Side: ' .. string.upper(side) .. ' Task#: ' .. taskNr .. ' removed out of Tasktable')
+				end
+			end
+			cleanUpTask(side, role, taskNr)
 		end
 	end
-	--local unit = next(playerDetails)
-	--while unit ~= nil do
-	for unit, k in pairs(playerDetails) do
-		if playerDetails[unit].taskNr == taskNr then 
-			tms.messageRefresh({unit, 0}) 
+	for unit, v in pairs(playerDetails) do
+		if playerDetails[unit].taskNr == taskNr then
+			tms.messageRefresh({unit, 0})
 			playerDetails[unit].taskNr = 0
 			tms.debug('TASK-OVER Looped message for ' .. unit .. ' canceled!')
 		end
-		--unit = next(playerDetails, unit)
 	end
-	task[side][role][taskNr].finish = timer.getTime()
-	task[side][role][taskNr].success = success
-	mist.removeFunction(task[side][role][taskNr].markerSchedule)
-	task[side][role][taskNr].markerSchedule = nil
-	tms.taskFinishMessage(side, role, taskNr)
-	mist.scheduleFunction(tms.deactivateGroups, {task[side][role][taskNr].groups}, timer.getTime() + tms_taskCleanUp)
+
 end
 
 --@ check by EVENT if a whole group is dead and if it is allied or hostile
 function tms.checkDeadGroup(unitName)
-	local coa = mist.DBs.unitsByName[unitName].coalition
-	local groupName = mist.DBs.unitsByName[unitName].groupName
-	if Group.getByName(groupName) == nil then return end
-	if string.match(groupName, 'awacs') then
-		mist.scheduleFunction(mist.respawnGroup, {groupName, true}, timer.getTime() + tms_awacsRespawn)
-		tms.debug('DEAD-GROUP: Side: ' .. coa .. ' AWACS dead. Respawn in ' .. tms_awacsRespawn .. ' seconds!' )
-	elseif string.match(groupName, 'tanker') then
-		mist.scheduleFunction(mist.respawnGroup, {groupName, true}, timer.getTime() + tms_tankerRespawn)
-		tms.debug('DEAD-GROUP: Side: ' .. coa .. ' TANKER dead. Respawn in ' .. tms_tankerRespawn .. ' seconds!' )
-	elseif string.match(groupName, 'gcicap') then
-		mist.scheduleFunction(mist.cloneGroup, {groupName, true}, timer.getTime() + tms_gcicapRespawn)
-		tms.debug('DEAD-GROUP: Side: ' .. coa .. ' GCICAP dead. Respawn in ' .. tms_gcicapRespawn .. ' seconds!' )
-	else
-		tms.debug('DeadUnit of ' .. groupName .. ' Unitname: ' .. unitName)
-		for i, side in pairs(sideTbl) do
-			for j, role in pairs(roleTbl) do
-				for k=1, #task[side][role].activeTaskTable do
-					local taskNr = task[side][role].activeTaskTable[k]
-					for l=1, #task[side][role][taskNr].groups do
-						if task[side][role][taskNr].groups[l] == groupName then
-							if string.match(task[side][role][taskNr].groups[l],'target') then
-								deadGroup[side][role][taskNr].target = deadGroup[side][role][taskNr].target + 1
-								tms.debug('DEAD-GROUP: ' .. groupName .. ' dead target units: ' .. deadGroup[side][role][taskNr].target)
-								if task[side][role][taskNr].target == deadGroup[side][role][taskNr].target then
-									tms.taskOver(side, role, taskNr, true)
-								end
-							elseif string.match(task[side][role][taskNr].groups[l], 'allied') then
-								deadGroup[side][role][taskNr].allied = deadGroup[side][role][taskNr].allied + 1
-								tms.debug('DEAD-GROUP: ' .. groupName .. ' dead allied units: '  .. deadGroup[side][role][taskNr].allied)
-								if task[side][role][taskNr].allied == deadGroup[side][role][taskNr].allied then
-									tms.taskOver(side, role, taskNr, false)
+	if mist.DBs.unitsByName[unitName] then
+		local coa = mist.DBs.unitsByName[unitName].coalition
+		local groupName = mist.DBs.unitsByName[unitName].groupName
+		if Group.getByName(groupName) == nil then return end
+		if string.match(groupName, 'awacs') then
+			mist.scheduleFunction(mist.respawnGroup, {groupName, true}, timer.getTime() + tms_awacsRespawn)
+			tms.debug('DEAD-GROUP: Side: ' .. coa .. ' AWACS dead. Respawn in ' .. tms_awacsRespawn .. ' seconds!' )
+		elseif string.match(groupName, 'tanker') then
+			mist.scheduleFunction(mist.respawnGroup, {groupName, true}, timer.getTime() + tms_tankerRespawn)
+			tms.debug('DEAD-GROUP: Side: ' .. coa .. ' TANKER dead. Respawn in ' .. tms_tankerRespawn .. ' seconds!' )
+		-- elseif string.match(groupName, 'gcicap') or string.match(groupName, 'hvcap') then
+			-- mist.scheduleFunction(mist.cloneGroup, {groupName, true}, timer.getTime() + tms_gcicapRespawn)
+			-- tms.debug('DEAD-GROUP: Side: ' .. coa .. ' GCICAP dead. Respawn in ' .. tms_gcicapRespawn .. ' seconds!' )
+		else
+			tms.debug('DEAD-UNIT of ' .. groupName .. ' Unitname: ' .. unitName)
+			for i, side in pairs(sideTbl) do
+				for j, role in pairs(roleTbl) do
+					for k=1, #task[side][role].activeTaskTable do
+						local taskNr = task[side][role].activeTaskTable[k]
+						for l=1, #task[side][role][taskNr].groups do
+							if task[side][role][taskNr].groups[l] == groupName then
+								if string.match(task[side][role][taskNr].groups[l],'target') then
+									deadGroup[side][role][taskNr].target = deadGroup[side][role][taskNr].target + 1
+									tms.debug('DEAD-GROUP: ' .. groupName .. ' dead target units: ' .. deadGroup[side][role][taskNr].target)
+									if task[side][role][taskNr].target == deadGroup[side][role][taskNr].target then
+										tms.taskOver(side, role, taskNr, true)
+									end
+								elseif string.match(task[side][role][taskNr].groups[l], 'allied') and not tms_combined then
+									deadGroup[side][role][taskNr].allied = deadGroup[side][role][taskNr].allied + 1
+									tms.debug('DEAD-GROUP: ' .. groupName .. ' dead allied units: '  .. deadGroup[side][role][taskNr].allied)
+									if task[side][role][taskNr].allied == deadGroup[side][role][taskNr].allied then
+										tms.taskOver(side, role, taskNr, false)
+									end
 								end
 							end
 						end
@@ -732,48 +822,6 @@ function tms.checkDeadGroup(unitName)
 			end
 		end
 	end
-end
-
---@ a Player has left his SLOT intentionaly or not but will be deletet
-function tms.deletePlayer(unitName)
-	local side = playerDetails[unitName].side
-	local role = playerDetails[unitName].role
-	if playerDetails[unitName].active and playerDetails[unitName].inZone and playerDetails[unitName].checkedin and task[side][role].checkedInAndInZone > 0 then
-		task[side][role].checkedInAndInZone = task[side][role].checkedInAndInZone - 1
-	end
-	playerDetails[unitName].inZone = false
-	playerDetails[unitName].checkedin = false
-	playerDetails[unitName].active = false
-	tms.messageRefresh({unitName, 0})
-end
-
---@ fetch all Data about a player and store it within this array for later use
-function tms.getPlayerDetails(unit)
-	if not playerDetails[unit] then 
-		playerDetails[unit] = {} 
-	end
-	local unitClass = Unit.getByName(unit)
-    local side = tms.coaToSide(unitClass:getCoalition())
-    local group = unitClass:getGroup()
-    local groupName = group:getName()
-    local gid = group:getID()
-    local unitType = unitClass:getTypeName() 
-	playerDetails[unit].side = side
-	playerDetails[unit].group = groupName
-	playerDetails[unit].gid = gid
-	playerDetails[unit].unitType = unitType
-	playerDetails[unit].interval = tms_refresh
-	playerDetails[unit].scheduleID = nil
-	playerDetails[unit].checkedin = false
-	playerDetails[unit].role = tms.taskType(groupName)
-	playerDetails[unit].active = true
-	playerDetails[unit].menu = {}
-	if playerDetails[unit].taskNr ~= 0 then  
-		playerDetails[unit].taskNr = playerDetails[unit].taskNr
-	else
-		playerDetails[unit].taskNr = 0
-	end
-	return playerDetails[unit]
 end
 
 function tms.stopSchedule()
@@ -800,6 +848,7 @@ end
 
 --@ the heart of the script, nearly everything will be released by events or via F10 menu
 function tms.eventHandler(event)
+	--@ check if unit is a human Player
 	local function ifHuman(unitName)
 		for player, i in pairs(playerDetails) do
 			if player == unitName then
@@ -809,6 +858,7 @@ function tms.eventHandler(event)
 			end
 		end
 	end
+	--@check if a unit is an Mapobject
 	local function ifObject(unitName)
 		if mist.DBs.deadObjects[tonumber(unitName)] and mist.DBs.deadObjects[tonumber(unitName)].objectType == 'building' then 
 			return true
@@ -816,14 +866,67 @@ function tms.eventHandler(event)
 			return false 
 		end
 	end
+	--@ will reset some playerinfo if a player leaves, crashes or dies....ehm or ejected ;-)
+	local function deletePlayer(unitName)
+		local side = playerDetails[unitName].side
+		local role = playerDetails[unitName].role
+		if playerDetails[unitName].active and playerDetails[unitName].inZone and playerDetails[unitName].checkedin and task[side][role].checkedInAndInZone > 0 then
+			task[side][role].checkedInAndInZone = task[side][role].checkedInAndInZone - 1
+		end
+		playerDetails[unitName].inZone = false
+		playerDetails[unitName].checkedin = false
+		playerDetails[unitName].active = false
+		tms.messageRefresh({unitName, 0})
+	end
+	--@ spawn an infantry unit on the pilot eject position 
+	local function spawnDownedPilot(unitName, unitPos)
+		local coa = tms.coaToSide(Unit.getByName(unitName):getCoalition())
+		local vars = {}
+		vars.action = 'clone'
+		if coa == 'blue' then
+			vars.gpName = 'blue crashed pilot'
+		elseif coa == 'red' then
+			vars.gpName = 'red crashed pilot'
+		end
+		vars.point = unitPos
+		downedPilot[#downedPilot+1] = mist.teleportToPoint(vars)
+		tms.debug('[EVENT] SPAWN EJECTED PILOT: ' .. unitName .. ' for Coa: ' .. coa)
+	end
 	
+	--@ used to know what kind of role an AC is designed for
+	local function taskType(groupName)
+		if string.match(groupName, 'CAS') then return 'cas'
+		elseif string.match(groupName, 'CAP') then return 'cap'
+		elseif string.match(groupName, 'SEAD') then return 'sead'
+		elseif string.match(groupName, 'CARGO') then return 'cargo'
+		else
+			env.info('No Role-Type found in group name: ' .. groupName)
+		end
+	end
 	--@ a player jumps in an available slot
 	if event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT then 	
 		local unitName = event.initiator:getName()
 		-- Player jumps into unit for the first time
 		if not playerDetails[unitName] then
-			tms.debug('EVENT: First time player information will collected: ' .. unitName)
-			tms.getPlayerDetails(unitName)
+			tms.debug('EVENT: First time player joins: ' .. unitName)
+			--tms.getPlayerDetails(unitName) 
+			playerDetails[unitName] = {} 
+			local group = Unit.getByName(unitName):getGroup() 
+			playerDetails[unitName].side = tms.coaToSide(Unit.getByName(unitName):getCoalition())
+			playerDetails[unitName].group = group:getName()
+			playerDetails[unitName].gid = group:getID()
+			playerDetails[unitName].unitType = Unit.getByName(unitName):getTypeName()
+			playerDetails[unitName].interval = tms_refresh
+			playerDetails[unitName].scheduleID = nil
+			playerDetails[unitName].checkedin = false
+			playerDetails[unitName].role = taskType(group:getName())
+			playerDetails[unitName].active = true
+			playerDetails[unitName].menu = {}
+			if playerDetails[unitName].taskNr ~= 0 then  
+				playerDetails[unitName].taskNr = playerDetails[unitName].taskNr
+			else
+				playerDetails[unitName].taskNr = 0
+			end
 			tms.init(unitName)
 		else
 			playerDetails[unitName].active = true
@@ -843,30 +946,41 @@ function tms.eventHandler(event)
 		local unitName = event.initiator:getName()
 		if playerDetails[unitName].active == true then
 			tms.debug('EVENT: PLAYER LEFT_UNIT: ' .. unitName)
-			tms.deletePlayer(event.initiator:getName())
+			deletePlayer(event.initiator:getName())
 			tms.stopSchedule()
 		end
 	
-	--@ player left unit by ejecting
+	--@ player left unit by ejecting or an AI Unit does
 	elseif event.id == world.event.S_EVENT_EJECTION then
 		local unitName = event.initiator:getName()
-		if event.initiator ~= nil and ifHuman(unitName) and playerDetails[unitName].active == true then
-			tms.debug('EVENT: HUMAN_PLAYER_EJECTED: ' .. unitName)
-			tms.deletePlayer(unitName)
-			tms.stopSchedule()
+		local unitPos = Unit.getByName(unitName):getPoint()
+		if event.initiator ~= nil then
+			if ifHuman(unitName) then
+				tms.debug('EVENT: HUMAN_PLAYER_EJECTED: ' .. unitName)
+				deletePlayer(unitName)
+				tms.stopSchedule()
+				mist.scheduleFunction(spawnDownedPilot,{unitName, unitPos},timer.getTime()+5)
+			elseif not ifHuman(unitName) and not unitIsDead[unitName] then
+				unitIsDead[unitName] = true
+				tms.debug('EVENT: AI_EJECTED: ' .. unitName)
+				tms.checkDeadGroup(unitName)
+				mist.scheduleFunction(spawnDownedPilot,{unitName, unitPos},timer.getTime()+5)
+			elseif not ifHuman(unitName) and unitIsDead[unitName] then
+				tms.debug('EVENT: AI_UNIT IS ALREADY EJECTED: ' .. unitName .. ' no further actions!')
+			end
 		end
 	
 	--@ a unit or a player died
 	elseif event.id == world.event.S_EVENT_DEAD or
-	event.id == world.event.S_EVENT_PILOT_DEAD or
-	event.id == world.event.S_EVENT_CRASH then
-	--tms.debug('EVENT DEAD ID: ' .. tostring(event.id) .. ' Initiator:' .. tostring(event.initiator))
+		event.id == world.event.S_EVENT_PILOT_DEAD or
+		event.id == world.event.S_EVENT_CRASH then
+		--tms.debug('EVENT DEAD ID: ' .. tostring(event.id) .. ' Initiator:' .. tostring(event.initiator))
 		if event.initiator ~= nil then
 			local unitName = event.initiator:getName()
 			-- if it is a player
 			if ifHuman(unitName) and playerDetails[unitName].active == true then
 				tms.debug('EVENT: HUMAN_PLAYER DEAD/CRASHED: ' .. unitName)
-				tms.deletePlayer(unitName)
+				deletePlayer(unitName)
 				tms.stopSchedule()
 			-- if it is an AI unit
 			elseif not ifHuman(unitName) then
@@ -901,25 +1015,32 @@ end
 
 do
 	for i, side in pairs(sideTbl) do
-		-- we need to make an randomized table of the task
-		task[side].randomNumTable = mist.randomizeNumTable({size=tms[side]})
+		local maxAmountOfTasks = 0
+		if tms_combined then
+			task['blue'].randomNumTable = mist.randomizeNumTable({size=tms[side]})
+			task['red'].randomNumTable = task['blue'].randomNumTable
+		else
+			task[side].randomNumTable = mist.randomizeNumTable({size=tms[side]})
+		end
 		for j, role in pairs(roleTbl) do
 			for taskNr=1, tms[side] do
 				local taskNrString = '#' .. string.format('%02d', taskNr)
 				-- fetch all groupnames that have to be activated
 				for groupName, v in pairs(mist.DBs.groupsByName) do
-				--local groupName = next(mist.DBs.groupsByName)
-				--repeat
 					if string.match(groupName, side) and string.match(groupName, role) and string.match(groupName, taskNrString) then
 						table.insert(task[side][role][taskNr].groups, groupName) -- store the "Groups" in global table for later use
-						if string.match(groupName,'target') then
-							task[side][role][taskNr].target = task[side][role][taskNr].target + Group.getByName(groupName):getInitialSize()
-						elseif string.match(groupName,'allied') then
-							task[side][role][taskNr].allied = task[side][role][taskNr].allied + Group.getByName(groupName):getInitialSize()
+						if tms_combined then	
+							if string.match(groupName,'target') then
+								task[side][role][taskNr].target = task[side][role][taskNr].target + Group.getByName(groupName):getInitialSize()
+							elseif string.match(groupName,'allied') then
+								task[side][role][taskNr].allied = task[side][role][taskNr].allied + Group.getByName(groupName):getInitialSize()
+							end
+						else
+							if string.match(groupName,'target') then
+								task[side][role][taskNr].target = task[side][role][taskNr].target + Group.getByName(groupName):getInitialSize()
+							end
 						end
 					end
-					--groupName = next(mist.DBs.groupsByName, groupName)
-				--until groupName == nil
 				end
 			end
 		end
