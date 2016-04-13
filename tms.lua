@@ -1,25 +1,24 @@
 --[[
-Credits to: SPEED, Grimes, SNAFU, CiriBob, Stonehouse, Lukrop and AJAX
+Credits to: SPEED, Grimes, SNAFU, CiriBob, Stonehouse, Lukrop, AJAX and Flightcontrol
 they all inspired me to design this script....
 
-tms.version = 0.97 BETA
-major = 11
-minor = 05
+tms.version = 1.0 RC1
+
 ]]
 
---tms_combined = true
+tms_combined = true				-- I have set this within the mission via "do script"
 tms_refresh = 5					-- 0=off, time of repeating the taskmessage
 tms_answerTime = 10  			-- advised not to be lower than '5'!
 tms_soundSystem = true  		-- if true you will get some cool voiceovers :)
-tms_csar = true					-- set true if there should be a soldier on an ejection
+tms_csar = false				-- set true if there should be a soldier on an ejection
 tms_awacsRespawn = 300
 tms_tankerRespawn = 300
-tms_gcicapRespawn = 30
+--tms_gcicapRespawn = 30
 tms_taskCleanUp = 600
 tms_sideTbl = {'blue','red'}
 tms_roleTbl = {'cas','cap','sead','cargo'}
 tms_blueHQ = 'Darkstar'
-tms_redHQ = '000'
+tms_redHQ = '961'
 tms_bluecombatzone = 'bluecombatzone'
 tms_redcombatzone = 'redcombatzone'
 
@@ -124,8 +123,6 @@ function tms.debug(text)
 	end
 end
 
-tms.debug('Initial tables have been build')
-
 --@ just to make a string out of an enum
 function tms.coaToSide(coa)
     if coa == coalition.side.NEUTRAL then return "neutral"
@@ -154,6 +151,17 @@ end
 function tms.startGroup(groupName)
 	if groupName == nil or type(groupName) ~= 'string' then return false end
 	trigger.action.groupContinueMoving(Group.getByName(groupName))
+end
+
+--@ used to know what kind of role an AC is designed for
+function tms.taskType(groupName)
+	if string.match(groupName, 'CAS') then return 'cas'
+	elseif string.match(groupName, 'CAP') then return 'cap'
+	elseif string.match(groupName, 'SEAD') then return 'sead'
+	elseif string.match(groupName, 'CARGO') then return 'cargo'
+	else
+		env.info('No Role-Type found in group name: ' .. groupName)
+	end
 end
 
 --@ calculating casualties for both, right out of the view of asking Coa
@@ -332,7 +340,7 @@ end
 
 function tms.smokeGroupOn(group, color, interval)
 	if interval < 100 then return false end
-	local smokePosition = mist.getAvgPos(mist.makeUnitTable(group))
+	local smokePosition = mist.getAvgPos(mist.makeUnitTable('[g]' .. group))
 	if string.upper(color) == 'RED' then smokeColor = trigger.smokeColor.Red
 	elseif string.upper(color) == 'BLUE' then smokeColor = trigger.smokeColor.Blue
 	elseif string.upper(color) == 'WHITE' then smokeColor = trigger.smokeColor.White
@@ -548,13 +556,13 @@ function tms.updatePlayersInZone()
 			local wasUnitInZone = playerDetails[unit].inZone
 			if isUnitInZone and not wasUnitInZone then
 				playerDetails[unit].inZone = true
-				tms.debug('ZONE PLAYER IN: ' .. unit)
+				tms.debug('PLAYER_ENTERS_ZONE: ' .. unit)
 				return true
 			elseif not isUnitInZone and wasUnitInZone then
 				playerDetails[unit].inZone = false
 				tms.messageRefresh({unit, 0})
 				tms.checkout(unit)
-				tms.debug('ZONE PLAYER LEFT: ' .. unit)
+				tms.debug('PLAYER_LEAVE_ZONE: ' .. unit)
 				return false
 			end
 		end
@@ -665,8 +673,28 @@ function tms.checkout(unit)
 	end
 end
 
+function tms.init()
+	for key, id in pairs(mist.DBs.MEunitsById) do
+		if id.skill == 'Client' or id.skill == 'Player' then
+			playerDetails[id.unitName] = {} 
+			playerDetails[id.unitName].gid = id.groupId 
+			playerDetails[id.unitName].side = id.coalition
+			playerDetails[id.unitName].group = id.groupName
+			playerDetails[id.unitName].unitType = id.type
+			playerDetails[id.unitName].interval = tms_refresh
+			playerDetails[id.unitName].scheduleID = nil
+			playerDetails[id.unitName].checkedin = false
+			playerDetails[id.unitName].role = tms.taskType(id.groupName)
+			playerDetails[id.unitName].active = false
+			playerDetails[id.unitName].menu = {}
+			playerDetails[id.unitName].taskNr = 0
+			tms.menuInit(id.unitName)
+		end
+	end
+end
+
 --@ this will init the F10 menu the first time a player jumps into a Cockpit
-function tms.init(unit)
+function tms.menuInit(unit)
 	if not playerDetails[unit].init then
 		local gid = playerDetails[unit].gid
 		-- providing the initial F10 items
@@ -682,11 +710,7 @@ function tms.init(unit)
 		if playerDetails[unit].role == 'cas' or playerDetails[unit].role == 'sead' then
 			playerDetails[unit].menu[10]= missionCommands.addSubMenuForGroup(gid, 'Target Marker', playerDetails[unit].menu[1])
 			playerDetails[unit].menu[11]= missionCommands.addCommandForGroup(gid, 'Smoke'   	 , playerDetails[unit].menu[10], tms.markTarget, {unit, 1})
-			-- if playerDetails[unit].unitType == 'A-10C' or playerDetails[unit].unitType == 'Ka-50' then
-				-- playerDetails[unit].menu[12]= missionCommands.addCommandForGroup(gid, 'Laser', playerDetails[unit].menu[10], tms.markTarget, {unit, 2})
-				-- playerDetails[unit].menu[13]= missionCommands.addCommandForGroup(gid, 'IR'   , playerDetails[unit].menu[10], tms.markTarget, {unit, 3})
-			-- end
-			playerDetails[unit].menu[14]= missionCommands.addCommandForGroup(gid, 'OFF'  		 , playerDetails[unit].menu[10], tms.markTarget, {unit, 0})
+			playerDetails[unit].menu[12]= missionCommands.addCommandForGroup(gid, 'OFF'  		 , playerDetails[unit].menu[10], tms.markTarget, {unit, 0})
 		end
 		playerDetails[unit].init = true
 	end
@@ -694,7 +718,7 @@ end
 
 --@ to build a string to display it in a MIL Style
 function tms.buildTime(sec, mode)
-	local dayTime = math.modf(sec, 86400)
+	local dayTime = math.modf(sec)
 	local hh = math.floor(dayTime / 3600)
 	dayTime = dayTime - hh * 3600
 	local mm = math.floor(dayTime / 60)
@@ -893,62 +917,30 @@ function tms.eventHandler(event)
 		tms.debug('[EVENT] SPAWN EJECTED PILOT: ' .. unitName .. ' for Coa: ' .. coa)
 	end
 	
-	--@ used to know what kind of role an AC is designed for
-	local function taskType(groupName)
-		if string.match(groupName, 'CAS') then return 'cas'
-		elseif string.match(groupName, 'CAP') then return 'cap'
-		elseif string.match(groupName, 'SEAD') then return 'sead'
-		elseif string.match(groupName, 'CARGO') then return 'cargo'
-		else
-			env.info('No Role-Type found in group name: ' .. groupName)
-		end
-	end
 	--@ a player jumps in an available slot
 	if event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT then 	
 		local unitName = event.initiator:getName()
-		-- Player jumps into unit for the first time
-		if not playerDetails[unitName] then
-			tms.debug('EVENT: First time player joins: ' .. unitName)
-			--tms.getPlayerDetails(unitName) 
-			playerDetails[unitName] = {} 
-			local group = Unit.getByName(unitName):getGroup() 
-			playerDetails[unitName].side = tms.coaToSide(Unit.getByName(unitName):getCoalition())
-			playerDetails[unitName].group = group:getName()
-			playerDetails[unitName].gid = group:getID()
-			playerDetails[unitName].unitType = Unit.getByName(unitName):getTypeName()
-			playerDetails[unitName].interval = tms_refresh
-			playerDetails[unitName].scheduleID = nil
-			playerDetails[unitName].checkedin = false
-			playerDetails[unitName].role = taskType(group:getName())
-			playerDetails[unitName].active = true
-			playerDetails[unitName].menu = {}
-			if playerDetails[unitName].taskNr ~= 0 then  
-				playerDetails[unitName].taskNr = playerDetails[unitName].taskNr
-			else
-				playerDetails[unitName].taskNr = 0
-			end
-			tms.init(unitName)
+		if playerDetails[unitName].taskNr ~= 0 then  
+			playerDetails[unitName].taskNr = playerDetails[unitName].taskNr
 		else
-			playerDetails[unitName].active = true
+			playerDetails[unitName].taskNr = 0
 		end
-		-- if awacs script is already running
-		if awacs and not awacs.awacsCommandsInstalled[unitName] then
-			awacs.getAwacsUnits()
-			awacs.installAwacsCommands(unitName)
-		end
+		playerDetails[unitName].active = true
 		if not schedule_updateUnits then 
 			schedule_updateUnits = mist.scheduleFunction(tms.updatePlayersInZone, {nil}, timer.getTime()+1, 30)
 			tms.debug('PLAYERDETAILS: Zone check schedule startet!')
 		end
+	-----------------------------------------------------------------------------------------------------------------
 	
 	--@ player left slot by exiting
 	elseif event.id == world.event.S_EVENT_PLAYER_LEAVE_UNIT and event.initiator ~= nil then
 		local unitName = event.initiator:getName()
 		if playerDetails[unitName].active == true then
 			tms.debug('EVENT: PLAYER LEFT_UNIT: ' .. unitName)
-			deletePlayer(event.initiator:getName())
+			deletePlayer(unitName)
 			tms.stopSchedule()
 		end
+	------------------------------------------------------------------------------------------------------------------
 	
 	--@ player left unit by ejecting or an AI Unit does
 	elseif event.id == world.event.S_EVENT_EJECTION then
@@ -959,16 +951,17 @@ function tms.eventHandler(event)
 				tms.debug('EVENT: HUMAN_PLAYER_EJECTED: ' .. unitName)
 				deletePlayer(unitName)
 				tms.stopSchedule()
-				mist.scheduleFunction(spawnDownedPilot,{unitName, unitPos},timer.getTime()+5)
+				if tms_csar then mist.scheduleFunction(spawnDownedPilot,{unitName, unitPos},timer.getTime()+10) end
 			elseif not ifHuman(unitName) and not unitIsDead[unitName] then
 				unitIsDead[unitName] = true
 				tms.debug('EVENT: AI_EJECTED: ' .. unitName)
 				tms.checkDeadGroup(unitName)
-				mist.scheduleFunction(spawnDownedPilot,{unitName, unitPos},timer.getTime()+5)
+				if tms_csar then mist.scheduleFunction(spawnDownedPilot,{unitName, unitPos},timer.getTime()+10) end
 			elseif not ifHuman(unitName) and unitIsDead[unitName] then
 				tms.debug('EVENT: AI_UNIT IS ALREADY EJECTED: ' .. unitName .. ' no further actions!')
 			end
 		end
+	------------------------------------------------------------------------------------------------------------------
 	
 	--@ a unit or a player died
 	elseif event.id == world.event.S_EVENT_DEAD or
@@ -999,7 +992,15 @@ function tms.eventHandler(event)
 				end
 			end
 		end
-		
+	
+	elseif event.id == world.event.S_EVENT_SHOT then --or event.id == S_EVENT_SHOOTING_START then
+		--if event.initiator ~= nil and event.target == nil then
+			env.info('[TMS] ' .. event.initiator:getName() .. ' shot with ' .. mist.utils.tableShow(event.weapon))
+			if not usedWeapons then usedWeapons = {} end
+			table.insert(usedWeapons, event.weapon)
+		--else
+			--env.info(event.initiator:getName() .. ' shot on ' .. event.target:getName())
+		--end
 	--@ catch the event on who shots who...	
 	-- elseif event.id == world.event.S_EVENT_HIT then
 		-- local weapon = event.weapon
@@ -1045,5 +1046,7 @@ do
 			end
 		end
 	end
+	tms.init()
 	event_tms = mist.addEventHandler(tms.eventHandler)
+	env.info('TMS initialized!')
 end
